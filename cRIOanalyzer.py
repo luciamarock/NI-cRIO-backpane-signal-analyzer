@@ -1,101 +1,136 @@
 import numpy as np
 import math
 from numpy import genfromtxt
-#import matplotlib.pyplot as plt
-#import scipy.fftpack
+import logging
 
-data=genfromtxt("TX100.xls") #THIS IS THE INPUT FILE acquired from teh cRIO backpane via LabVIEW vi 
+logging.basicConfig(level=logging.INFO)
 
-col1=data[:,1]
-col2=data[:,2]
-col3=data[:,3]
-col4=data[:,4]
-col5=data[:,5]
-col6=data[:,6]
-col7=data[:,7]
-col8=data[:,8]
-col9=data[:,9]
+def load_data(filename: str) -> np.ndarray:
+    """
+    Loads data from a CSV file containing cRIO backplane measurements and prepares it for analysis.
 
-concatenated=np.concatenate((col1,col2,col3,col4,col5,col6,col7,col8,col9))
-#print('concatenated length = {}'.format(len(concatenated)))
-#col0=data[:,1]
-col0=concatenated
+    Parameters:
+    filename (str): The path to the CSV file containing the data.
 
-Fs=5000000 #THIS IS THE SAMPLING FREQUENCY OF THE cRIO IO MODULES 
-#noe=975000
-noe=len(concatenated)
-conv_gain=0.00305382/2.
-dinamics=16384. # 14 bit 
+    Returns:
+    np.ndarray: A concatenated array of columns from the data file, suitable for analysis.
+    """
+    try:
+        # Load data from CSV file containing cRIO backplane measurements
+        data = genfromtxt(filename, skip_header=1, delimiter=',', dtype=None, encoding=None)
+        
+        # Extract columns from data array
+        cols = [data[:, i] for i in range(1, 10)]
+        
+        # Concatenate all columns into single array for analysis
+        return np.concatenate(cols)
+    except FileNotFoundError:
+        logging.error(f"File {filename} not found.")
+        return np.array([])
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
+        return np.array([])
 
-time = []
-samples0=[]
-#samples=[]
-#samples2=[]
+def initialize_parameters():
+    # Define acquisition parameters
+    Fs = 5000000  # Sampling frequency of cRIO IO modules in Hz 
+    conv_gain = 0.00305382 / 2.  # Conversion gain factor
+    dinamics = 16384.  # Dynamic range for 14-bit system
+    return Fs, conv_gain, dinamics
 
-for i in range (noe):
-    time.append(i)
-    samples0.append((col0[i]-dinamics/2.)*conv_gain)
+def convert_to_voltage(raw_data, dinamics, conv_gain):
+    # Initialize arrays for time domain analysis using vectorization
+    time = np.arange(len(raw_data))
+    samples = (raw_data - dinamics / 2) * conv_gain
+    return time, samples
+
+def perform_fft(samples, Fs):
+    noe = len(samples)
+    spectra = np.fft.fft(np.array(samples))
+    normamp = np.abs(spectra[:noe // 2]) * 2. / noe
     
-    #samples.append(col1[i])
-    #samples2.append(col2[i])
-print(' ')    
-peak = max(samples0)
-print('signal amplitude = {}'.format(peak))
-spectra=np.fft.fft(np.array(samples0))
-#print(len(spectra))
-normamp=np.abs(spectra[:noe//2])*2./noe
-#spectra[:noe//2] takes the first half of spectra
-
-gaps=float(Fs)/noe
-print('fft bins length = {}'.format(gaps))
-
-freq=[]
-amps=[]
-
-for i in range (noe/2):
-    amps.append(normamp[i])
-    freq.append(gaps/2.+i*gaps)
+    # Calculate frequency resolution
+    gaps = float(Fs) / noe
     
+    # Create frequency and amplitude arrays
+    freq = [gaps / 2. + i * gaps for i in range(noe // 2)]
+    amps = list(normamp)
+    
+    # Remove DC component
+    amps.pop(0)
+    freq.pop(0)
+    
+    return freq, amps, gaps
 
-amps.pop(0)
-freq.pop(0)
-fpeak = max(amps)
-index = np.argmax(amps)
-peaksvect=[0.]*len(amps)
-peaksvect[0]=amps[0]
+def find_peaks(amps):
+    fpeak = max(amps)
+    index = np.argmax(amps)
+    peaksvect = [0.] * len(amps)
+    peaksvect[0] = amps[0]
+    
+    # Detect peaks in spectrum
+    for i in range(len(amps) - 2):
+        if (amps[i + 1] - amps[i]) > 0 and (amps[i + 1] - amps[i + 2]) > 0:
+            peaksvect[i + 1] = amps[i + 1]
+            
+    return fpeak, index, peaksvect
 
-Aa=0
-Ca=0
-An=0
-Cn=0
-for i in range (len(amps)-2):
-    if (amps[i+1]-amps[i])>0 and (amps[i+1]-amps[i+2])>0:
-        peaksvect[i+1]=amps[i+1]
-for i in range (len(peaksvect)):
-    if i==(index*2) or i==(index*3+1) or i==(index*4+2) or i==(index*5+3) or i==(index*6+3) or i==(index*7+4):
-        Aa=Aa+peaksvect[i]
-        Ca=Ca+1        
-    elif i!=index:
-        An=An+amps[i]
-        Cn=Cn+1
-Ps=10.*math.log10(pow(fpeak,2)/2.)
-#Aa=float(Aa/Ca)
-An=float(An/Cn)
-Pn=10.*math.log10(pow(An,2)/2.)
-Pd=10.*math.log10(pow(Aa,2)/2.)
-SINAD=(Ps+Pn+Pd)/(Pn+Pd)
-ENOB=((SINAD-1.76)/6.02)*100 + 26
-#ENOB=(SINAD-1.76)/6.02
-print('frequency of the peak = {}'.format(freq[index]))
-print('amplitude of the frequency peak = {}'.format(fpeak))
-print('Aa = {} An = {}'.format(Aa, An))
-print('ENOB = {}'.format(ENOB))
-#UNCOMMENT THE FOLLOWING RAWS FOR PLOTTING (uncomment also the import for plt.)
-'''
-plt.figure()
-plt.xlabel('frequency (Hz)')
-plt.ylabel('amplitude (V)')
-plt.semilogx(freq,peaksvect,'.')
-plt.grid()
-'''
-print(' ')
+def calculate_signal_metrics(amps, peaksvect, index):
+    Aa = 0  # Accumulator for harmonic amplitudes
+    Ca = 0  # Counter for harmonics
+    An = 0  # Accumulator for noise amplitudes
+    Cn = 0  # Counter for noise components
+    
+    # Separate harmonics from noise
+    for i in range(len(peaksvect)):
+        if i == (index * 2) or i == (index * 3 + 1) or i == (index * 4 + 2) or i == (index * 5 + 3) or i == (index * 6 + 3) or i == (index * 7 + 4):
+            Aa += peaksvect[i]
+            Ca += 1        
+        elif i != index:
+            An += amps[i]
+            Cn += 1
+            
+    # Avoid division by zero
+    An = float(An / Cn) if Cn > 0 else 0.0  # Average noise amplitude
+    return Aa, An
+
+def calculate_power_metrics(fpeak, Aa, An):
+    Ps = 10. * math.log10(pow(fpeak, 2) / 2.)  # Signal power
+    Pn = 10. * math.log10(pow(An, 2) / 2.)  # Noise power
+    Pd = 10. * math.log10(pow(Aa, 2) / 2.)  # Distortion power
+    
+    # Calculate SINAD and ENOB
+    SINAD = (Ps + Pn + Pd) / (Pn + Pd)
+    ENOB = ((SINAD - 1.76) / 6.02) * 100 + 26
+    
+    return ENOB
+
+def main():
+    # Load and process data
+    raw_data = load_data("TX100.xls")
+    Fs, conv_gain, dinamics = initialize_parameters()
+    
+    # Convert to voltage
+    time, samples = convert_to_voltage(raw_data, dinamics, conv_gain)
+    
+    logging.info(' ')
+    logging.info('Signal amplitude = {}'.format(max(samples)))
+    
+    # Perform FFT analysis
+    freq, amps, gaps = perform_fft(samples, Fs)
+    logging.info('FFT bins length = {}'.format(gaps))
+    
+    # Find peaks and calculate metrics
+    fpeak, index, peaksvect = find_peaks(amps)
+    Aa, An = calculate_signal_metrics(amps, peaksvect, index)
+    ENOB = calculate_power_metrics(fpeak, Aa, An)
+    
+    # Log results
+    logging.info('Frequency of the peak = {}'.format(freq[index]))
+    logging.info('Amplitude of the frequency peak = {}'.format(fpeak))
+    logging.info('Aa = {} An = {}'.format(Aa, An))
+    logging.info('ENOB = {}'.format(ENOB))
+    logging.info(' ')
+
+if __name__ == "__main__":
+    main()
