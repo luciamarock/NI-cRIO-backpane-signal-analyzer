@@ -33,6 +33,3 @@ flowchart TD
 
 To use the signal analyzer, ensure you have the required dependencies installed and provide the appropriate input file. The program will process the data and output the estimated parameters.
 
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
